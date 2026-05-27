@@ -1,7 +1,126 @@
 #!/bin/sh
 
+DEFAULTS=/etc/default/shellhub-agent
+
+log() {
+    printf '%s\n' "shellhub-agent-wrapper: $*" >&2
+}
+
+debug() {
+    case "${SHELLHUB_AGENT_WRAPPER_DEBUG:-0}" in
+        1|true|TRUE|yes|YES|on|ON) log "debug: $*" ;;
+    esac
+}
+
+if [ -r "$DEFAULTS" ]; then
+    # Keep values already provided by systemd or the caller.
+    server_address_set=${SERVER_ADDRESS+x}
+    private_key_set=${PRIVATE_KEY+x}
+    tenant_id_set=${TENANT_ID+x}
+
+    server_address_value=${SERVER_ADDRESS-}
+    private_key_value=${PRIVATE_KEY-}
+    tenant_id_value=${TENANT_ID-}
+
+    case $- in
+        *a*) allexport_was_set=1 ;;
+        *) allexport_was_set=0 ;;
+    esac
+
+    set -a
+    if ! . "$DEFAULTS"; then
+        [ "$allexport_was_set" = "1" ] || set +a
+        log "failed to load defaults from $DEFAULTS"
+        exit 1
+    fi
+    [ "$allexport_was_set" = "1" ] || set +a
+
+    [ -n "$server_address_set" ] && SERVER_ADDRESS="$server_address_value"
+    [ -n "$private_key_set" ] && PRIVATE_KEY="$private_key_value"
+    [ -n "$tenant_id_set" ] && TENANT_ID="$tenant_id_value"
+
+    export SERVER_ADDRESS
+    export PRIVATE_KEY
+    export TENANT_ID
+fi
+
+sourced_environment_files=
+
 for i in /etc/shellhub-agent.environment.d/*.sh ; do
-    [ -r "$i" ] && . $i
+    if [ -r "$i" ]; then
+        . "$i"
+        sourced_environment_files="${sourced_environment_files}${sourced_environment_files:+ }$i"
+    fi
 done
 
-@LIBEXEC@/shellhub/bin/shellhub-agent $@
+export SERVER_ADDRESS
+export PRIVATE_KEY
+export TENANT_ID
+
+if [ -r "$DEFAULTS" ]; then
+    debug "loaded defaults from $DEFAULTS"
+else
+    debug "defaults file $DEFAULTS is not readable"
+fi
+
+if [ -n "$sourced_environment_files" ]; then
+    debug "loaded environment snippets: $sourced_environment_files"
+else
+    debug "no readable environment snippets found in /etc/shellhub-agent.environment.d"
+fi
+
+if [ -n "${SERVER_ADDRESS+x}" ]; then
+    if [ -n "$SERVER_ADDRESS" ]; then
+        debug "SERVER_ADDRESS=$SERVER_ADDRESS"
+    else
+        debug "SERVER_ADDRESS=<empty>"
+    fi
+else
+    debug "SERVER_ADDRESS=<unset>"
+fi
+
+if [ -n "${TENANT_ID+x}" ]; then
+    if [ -n "$TENANT_ID" ]; then
+        debug "TENANT_ID=<set>"
+    else
+        debug "TENANT_ID=<empty>"
+    fi
+else
+    debug "TENANT_ID=<unset>"
+fi
+
+if [ -n "${PRIVATE_KEY+x}" ]; then
+    if [ -n "$PRIVATE_KEY" ]; then
+        debug "PRIVATE_KEY=<set>"
+    else
+        debug "PRIVATE_KEY=<empty>"
+    fi
+else
+    debug "PRIVATE_KEY=<unset>"
+fi
+
+if [ -n "${PRIVATE_KEY:-}" ]; then
+    if [ -r "$PRIVATE_KEY" ]; then
+        debug "PRIVATE_KEY file is readable"
+    else
+        debug "PRIVATE_KEY is set, but its file is not readable"
+    fi
+fi
+
+if [ -n "${SERVER_ADRESS+x}" ]; then
+    debug "SERVER_ADRESS is set, but the agent expects SERVER_ADDRESS"
+fi
+
+if [ -z "${SERVER_ADDRESS:-}" ]; then
+    log "missing required SERVER_ADDRESS after loading configuration"
+
+    if [ -n "${SERVER_ADRESS+x}" ]; then
+        log "SERVER_ADRESS is set, but the agent expects SERVER_ADDRESS"
+    fi
+
+    log "checked $DEFAULTS and /etc/shellhub-agent.environment.d/*.sh"
+    log "set SHELLHUB_AGENT_WRAPPER_DEBUG=1 for verbose startup diagnostics"
+    exit 1
+fi
+
+exec @LIBEXEC@/shellhub/bin/shellhub-agent "$@"
